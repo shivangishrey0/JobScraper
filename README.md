@@ -34,6 +34,9 @@ npm run dev:server
 
 # terminal 2
 npm run dev:client
+
+# optional — ingest once (needs Atlas + Chrome)
+npm run scrape
 ```
 
 - API: http://localhost:5000/api/health
@@ -41,7 +44,7 @@ npm run dev:client
 
 Health returns `{ ok, mongo }`. If Mongo is down you get HTTP 503 — that is intentional, not a silent green check.
 
-On server start, Mongoose syncs indexes (`jobs.url` unique). Check Atlas → Browse Collections after one boot if you want to see `jobs` / `scrapelogs` appear once the scraper runs (phase 3).
+After a scrape, Atlas → Browse Collections should show `jobs`.
 
 ## Docs
 

@@ -8,7 +8,8 @@
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
     "lint:server": "npm run lint --prefix server",
-    "lint:client": "npm run lint --prefix client"
+    "lint:client": "npm run lint --prefix client",
+    "scrape": "npm run scrape --prefix server"
   },
   "devDependencies": {
     "prettier": "^3.4.2"

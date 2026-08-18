@@ -11,4 +11,6 @@ export const config = {
   mongoUri: process.env.MONGODB_URI || '',
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
   nodeEnv: process.env.NODE_ENV || 'development',
+  sourceUrl: process.env.SOURCE_URL || 'https://remoteok.com/api',
+  puppeteerNoSandbox: process.env.PUPPETEER_NO_SANDBOX === '1',
 };

@@ -28,28 +28,29 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 
 **Deploy intent (phase 9, not done yet):** API + Chrome on Render/Railway; React on Vercel. Serverless + Puppeteer is a poor fit.
 
-## Architecture (current — phase 1)
+## Architecture (current — phase 3)
 
 ```
-[Vite :5173]  --proxy /api-->  [Express :5000]  -->  [MongoDB Atlas]
-                                      |
-                               GET /api/health  (mongo readyState; 503 if down)
+                    npm run scrape (CLI)
+                              |
+[Vite :5173] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
+                              |                        ^
+                     GET /api/health                   |
+                              |              Puppeteer+stealth GET remoteok.com/api
+                              |              normalize → bulkWrite upsert on url
 ```
 
-Locally the browser talks to Vite only. CORS still matters in production when the UI host ≠ API host.
+Trigger HTTP endpoint is phase 7. ScrapeLog writes are phase 5.
 
-Collections (phase 2): `jobs` (one doc per canonical URL) and `scrapelogs` (one doc per run, including failures). Scraper still lands in phase 3.
+## Detection surface (started phase 3)
 
-## Detection surface (placeholder — filled in phases 3–5)
+Stealth plugin is on. Still missing (phase 4): randomized UA, delay/jitter, extra headers, stub proxy list. Still missing (phase 5): retries, circuit breaker, ScrapeLog on every run.
 
-Even a public JSON URL can rate-limit or fingerprint:
+Even a public JSON URL can rate-limit or fingerprint: TLS of headless Chrome, UA, volume, datacenter IP.
 
-- TLS / HTTP fingerprint of headless Chrome
-- User-Agent + header set
-- Request volume / interval
-- Datacenter IP (Render) vs residential
+## Ingestion strategy (phase 3)
 
-Mitigations we will implement later: stealth plugin, UA jitter, delay/jitter, stubbed proxy rotation, retries + circuit breaker. We will **not** scrape behind a login.
+One GET of the full JSON batch per run (RemoteOK is not paginated like a search UI). Skip the legal/metadata row and any item missing title, company, or http(s) URL. Strip HTML in descriptions, cap at 10k chars. Upsert with `bulkWrite` keyed on `url`. `scrapedAt` updates every time we see the listing.
 
 ## Where I stop (ToS)
 
@@ -65,4 +66,4 @@ I will use RemoteOK's public feed and keep outbound links. I will not add Linked
 
 - **0** — Locked RemoteOK JSON + MERN + Puppeteer-for-pipeline-not-because-HTML-is-required.
 - **1** — Repo split, Prettier, ESLint, Atlas connection, `/api/health`.
-- **2** — Job + ScrapeLog schemas, unique `url`, `contentHash` helper, index sync on boot.
+- **3** — Puppeteer + stealth, RemoteOK JSON, normalize, upsert on `url` (`npm run scrape`).

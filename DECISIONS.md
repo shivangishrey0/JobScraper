@@ -39,14 +39,28 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 | `errorType` enum + `detail` string                   | Dashboard can group; humans can read                                              | Only a stack trace — ugly and leaks internals                                                             |
 | `syncIndexes()` on boot                              | Unique `url` must exist on Atlas, including when `autoIndex` is off in production | Trusting Mongoose autoIndex                                                                               |
 
+## Phase 3
+
+| Decision | Why | Rejected |
+|---|---|---|
+| Puppeteer `page.goto` + `response.json()` | Same pipeline we'd use for HTML; JSON is just the payload | `axios.get` — simpler, but then stealth/jitter have nothing to wrap |
+| Skip index-0 legal object and incomplete rows | Never invent a company or URL | Saving `{ title: "unknown" }` to look like volume |
+| `bulkWrite` upsert on `url` | One round-trip; unique index is the same key | N × `findOneAndUpdate` — slow on Atlas free tier |
+| `domcontentloaded` not `networkidle0` | Raw JSON has no "idle"; idle waits hang on leftover sockets | Copy-paste from blog HTML scrapers |
+| `--no-sandbox` on Linux only | Render/Chromium needs it; Windows local does not | Always no-sandbox — extra hole on a laptop |
+| No ScrapeLog yet | Phase 5 owns "every run is logged, including failures" | Logging success-only now — would teach the wrong habit |
+
 ## Trade-off under time pressure (will extend later)
 
 Phase 1 does **not** verify Atlas for you — you still paste a URI. I would spend a real week adding a `npm run doctor` that checks DNS, auth, and IP allowlisting.
 
 Phase 2 does not expire old jobs. With a real week I'd add `lastSeenAt` and a TTL/archive for listings that vanished from the feed.
 
+Phase 3 uses one Chrome per CLI run. With a real week I'd keep a browser pool so cron does not pay cold-start every 6 hours.
+
 ## Where AI was used
 
 - **Phase 1:** scaffold, lint/format, health, docs.
 - **Phase 2:** schema files, hash helper, these tables.
-- **You must personally:** create Atlas, run health, and explain unique-on-url vs title+company, why hash excludes url, and why empty scrape ≠ success.
+- **Phase 3:** Puppeteer adapter, normalize, bulkWrite, CLI.
+- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, and explain unique-on-url, hash, and why Puppeteer wraps a JSON API.
