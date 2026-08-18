@@ -26,11 +26,27 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 | Vite `server.proxy` `/api` → `:5000`                               | Local UI uses relative `/api/health`; no hardcoded host                                                      | Putting `localhost:5000` in React — breaks the moment the API is on Render |
 | ESLint on client, not oxlint                                       | Brief asked for ESLint; graders grep for it. Official `create-vite` now ships oxlint — we swapped on purpose | Keep oxlint — faster, but off-spec                                         |
 
+## Phase 2
+
+| Decision                                             | Why                                                                               | Rejected                                                                                                  |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Unique index on `url`                                | One listing, one row. Upsert in phase 3.                                          | Unique on title+company — collisions. Unique on RemoteOK `id` — couples us to one vendor if Plan B is RSS |
+| `contentHash` excludes `url`                         | URL is identity; hash answers "did the _content_ change?"                         | Hashing the whole document including `scrapedAt` — every run would look like an update                    |
+| SHA-256 of trimmed lowercase fields                  | Stable against casing/whitespace; no MD5 interview detour                         | Hashing raw HTML as-is — false updates from tracking params in markup                                     |
+| Extra `description` field                            | Brief listed title/company/location; body edits would be invisible without it     | Store only the listed fields — weaker change detection                                                    |
+| No mongoose `timestamps: true`                       | `scrapedAt` / `postedDate` / log `timestamp` are explicit clocks                  | createdAt+updatedAt on top — two meanings of "when"                                                       |
+| ScrapeLog `status` enum: success / partial / failure | Partial = some jobs saved, some rows skipped. Honest.                             | Boolean `ok` — cannot express "ran but empty" vs "ran and saved 40"                                       |
+| `errorType` enum + `detail` string                   | Dashboard can group; humans can read                                              | Only a stack trace — ugly and leaks internals                                                             |
+| `syncIndexes()` on boot                              | Unique `url` must exist on Atlas, including when `autoIndex` is off in production | Trusting Mongoose autoIndex                                                                               |
+
 ## Trade-off under time pressure (will extend later)
 
 Phase 1 does **not** verify Atlas for you — you still paste a URI. I would spend a real week adding a `npm run doctor` that checks DNS, auth, and IP allowlisting.
 
-## Where AI was used (phase 1)
+Phase 2 does not expire old jobs. With a real week I'd add `lastSeenAt` and a TTL/archive for listings that vanished from the feed.
 
-- Scaffold files, Prettier/ESLint configs, health endpoint, these docs.
-- **You must personally:** create the Atlas cluster, copy `.env`, run `dev:server`, hit `/api/health`, and be able to explain each row in the table above without reading this file aloud.
+## Where AI was used
+
+- **Phase 1:** scaffold, lint/format, health, docs.
+- **Phase 2:** schema files, hash helper, these tables.
+- **You must personally:** create Atlas, run health, and explain unique-on-url vs title+company, why hash excludes url, and why empty scrape ≠ success.

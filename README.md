@@ -41,6 +41,8 @@ npm run dev:client
 
 Health returns `{ ok, mongo }`. If Mongo is down you get HTTP 503 — that is intentional, not a silent green check.
 
+On server start, Mongoose syncs indexes (`jobs.url` unique). Check Atlas → Browse Collections after one boot if you want to see `jobs` / `scrapelogs` appear once the scraper runs (phase 3).
+
 ## Docs
 
 - `design-doc.md` — ingestion, detection, ToS line

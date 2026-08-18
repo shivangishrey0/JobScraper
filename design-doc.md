@@ -38,7 +38,7 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 
 Locally the browser talks to Vite only. CORS still matters in production when the UI host ≠ API host.
 
-The scraper process does not exist yet. Health is the only API so we can prove env + Atlas before writing schemas.
+Collections (phase 2): `jobs` (one doc per canonical URL) and `scrapelogs` (one doc per run, including failures). Scraper still lands in phase 3.
 
 ## Detection surface (placeholder — filled in phases 3–5)
 
@@ -55,7 +55,14 @@ Mitigations we will implement later: stealth plugin, UA jitter, delay/jitter, st
 
 I will use RemoteOK's public feed and keep outbound links. I will not add LinkedIn/Indeed/Naukri adapters, cookie jars, or login automation — even as a "demo."
 
+## Data model (phase 2)
+
+**Job** — identity is `url` (unique). `contentHash` is SHA-256 of title+company+location+description so a re-scrape can tell "same URL, listing changed" vs "same listing, we just saw it again." `scrapedAt` is _our_ clock; `postedDate` is _theirs_. Empty `location` stays empty — UI will say "Not listed."
+
+**ScrapeLog** — every run writes one row: `success` | `partial` | `failure`, plus `errorType`, `itemsFound`, `durationMs`. An empty payload is `failure` + `empty_payload`, never a quiet success. Optional `detail` is the sentence the dashboard shows.
+
 ## Phase log
 
 - **0** — Locked RemoteOK JSON + MERN + Puppeteer-for-pipeline-not-because-HTML-is-required.
 - **1** — Repo split, Prettier, ESLint, Atlas connection, `/api/health`.
+- **2** — Job + ScrapeLog schemas, unique `url`, `contentHash` helper, index sync on boot.

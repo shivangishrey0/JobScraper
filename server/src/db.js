@@ -1,5 +1,7 @@
 import mongoose from 'mongoose';
 import { config } from './config.js';
+import { Job } from './models/Job.js';
+import { ScrapeLog } from './models/ScrapeLog.js';
 
 /**
  * Single shared connection for the whole process.
@@ -26,6 +28,11 @@ export async function connectDb() {
   await mongoose.connect(config.mongoUri, {
     serverSelectionTimeoutMS: 5000,
   });
+
+  // Unique `url` must exist on Atlas, not only in the schema file. syncIndexes
+  // is explicit so production (autoIndex often off) still gets the constraint.
+  await Job.syncIndexes();
+  await ScrapeLog.syncIndexes();
 }
 
 export function mongoStatus() {
