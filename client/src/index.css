@@ -1,0 +1,91 @@
+:root {
+  --bg: #0f1419;
+  --panel: #1a222c;
+  --text: #e7ecf1;
+  --muted: #9aa8b5;
+  --ok: #3dd68c;
+  --down: #ff7b7b;
+  --border: #2c3845;
+  --sans: 'Segoe UI', system-ui, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 3rem 1.25rem;
+}
+
+.eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+h1 {
+  font-size: 2rem;
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  margin: 0 0 0.75rem;
+}
+
+h2 {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+
+.lede {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.card {
+  margin-top: 2rem;
+  padding: 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.ok {
+  color: var(--ok);
+}
+
+.down {
+  color: var(--down);
+  line-height: 1.5;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  background: #0c1015;
+  padding: 0.75rem;
+  border-radius: 8px;
+  overflow: auto;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+}

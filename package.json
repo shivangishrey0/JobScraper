@@ -1,0 +1,16 @@
+{
+  "name": "job-scraper",
+  "private": true,
+  "description": "MERN job-listing ingestion pipeline (RemoteOK public API)",
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "lint:server": "npm run lint --prefix server",
+    "lint:client": "npm run lint --prefix client"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2"
+  }
+}
