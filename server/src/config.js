@@ -30,4 +30,8 @@ export const config = {
   // purpose, this is a polite public feed, not a target to hammer.
   scrapeCronSchedule: process.env.SCRAPE_CRON_SCHEDULE || '0 */6 * * *',
   schedulerEnabled: process.env.SCRAPE_SCHEDULER_ENABLED !== 'false',
+  // node-cron defaults to the host's local timezone when unset. Pinning UTC
+  // means "every 6 hours" lands on the same clock times on a laptop (IST)
+  // and on Render (UTC) instead of quietly differing by timezone offset.
+  scrapeCronTimezone: process.env.SCRAPE_CRON_TIMEZONE || 'UTC',
 };
