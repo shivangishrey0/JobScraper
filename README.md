@@ -82,5 +82,5 @@ Starting the server (`npm run dev:server` / `npm start`) also starts an automati
 - [x] Phase 8 — Dashboard: listings table, trigger button, status panel, responsive, dark mode
 - [ ] Phase 9 — Deploy: API+Chrome on Render/Railway, frontend on Vercel/Netlify, live E2E check
 - [ ] Phase 10 — `design-doc.md` complete (all 4 required sections) + full pipeline diagram
-- [ ] Phase 11 — `DECISIONS.md` rewritten to 1 page
+- [x] Phase 11 — `DECISIONS.md` rewritten to 1 page (done ahead of 9/10, before deploy)
 - [ ] Phase 12 — Interview walkthrough notes
