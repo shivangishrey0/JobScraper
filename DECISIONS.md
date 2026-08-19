@@ -86,7 +86,19 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 | Invalid `SCRAPE_CRON_SCHEDULE` throws at startup | Same fail-fast rule already used for a missing `MONGODB_URI` — a bad config should be loud, not silently inert | Falling back to a default schedule on a bad string — hides a typo instead of surfacing it |
 | Scheduler starts after `app.listen`, not before | The HTTP port is the primary deliverable; confirm it's up first | Starting the scheduler before listen — no real benefit, couples two independent failures |
 
-**Hostile target (interview):** phase 7's manual trigger will check the same task's `isBusy()` before allowing a click-triggered run, so cron and a manual trigger can't launch two Chromiums either — no second lock to write.
+**Correction (found in phase 7):** the plan above — reuse the task's `isBusy()` for the manual trigger — turned out to be wrong. See phase 7's table.
+
+## Phase 7
+
+| Decision | Why | Rejected |
+|---|---|---|
+| Dedicated `scraper/lock.js` (plain boolean, sync check-and-set) shared by cron and the trigger route | Tested the alternative first and it failed: two `execute()` calls fired back to back, and an `isBusy()` check ~5ms before `execute()`, both let a second run start — the busy flag isn't set synchronously | node-cron's `isBusy()` + `execute()` (phase 6's original plan) — looked sufficient, verified insufficient by actually running it, not by reasoning about it |
+| `POST /api/scrape/trigger` responds 202/409 immediately, runs the scrape in the background | A run can take ~40s (jitter + retries + Puppeteer); holding an HTTP connection open that long is bad UX and risks a client-side timeout | Awaiting `runScrape()` in the handler and returning the result synchronously — simpler code, worse UX, and duplicates what `/api/scrape/status` is for |
+| `GET /api/jobs` excludes only `contentHash`/`__v`, returns everything else stored | Internal bookkeeping fields aren't for the UI; everything else is real, stored data — no reshaping that could look like inventing a field | A hand-picked field whitelist — extra code, and any field added later to `Job.js` would silently not show up until this route is also updated |
+| Cron timezone pinned to `UTC` via `SCRAPE_CRON_TIMEZONE` | Found via a live run: an unset timezone defaults to the host's local time, so this laptop (IST) puts "every 6 hours" on :30-minute boundaries; a UTC deploy target would land on the clean hour instead — same schedule, different observed times depending on where it runs | Leaving it unset — "works on my machine," silently different in production |
+| `getSchedulerTask()` exported from `scheduler.js` as a shared getter | Matches how `config.js` is already imported directly wherever needed, rather than threaded through `createApp()`'s arguments | Passing the task into `createApp(task)` — would mean reordering `startScheduler()` before `app.listen()`, undoing phase 6's "confirm the port is up first" ordering for no real benefit |
+
+**Hostile target (interview):** why the lock is a plain variable and not `Atomics`/a mutex library — single Node process, single event loop, no actual concurrency to guard against, just an ordering guarantee within one process.
 
 ## Trade-off under time pressure (will extend later)
 
@@ -102,6 +114,8 @@ Phase 5 uses one threshold/cooldown for every failure type. With a real week I'd
 
 Phase 6's schedule is a single global interval. With a real week I'd make it adaptive — back off the interval automatically after a circuit trip instead of retrying on the same 6h clock that got it blocked in the first place.
 
+Phase 7's `/api/jobs` has no text search or filter by source/company. With a real week I'd add query params for that instead of making the dashboard fetch everything and filter client-side.
+
 ## Where AI was used
 
 - **Phase 1:** scaffold, lint/format, health, docs.
@@ -109,5 +123,6 @@ Phase 6's schedule is a single global interval. With a real week I'd make it ada
 - **Phase 3:** Puppeteer adapter, normalize, bulkWrite, CLI.
 - **Phase 4:** UA list, jitter, headers, proxy stub.
 - **Phase 5:** error classification, retry/backoff, circuit breaker, partial-write handling.
-- **Phase 6:** scheduler wiring, `node-cron` option research (confirmed `noOverlap`/`isBusy` behavior by running it locally before relying on it).
-- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, start the server and watch it log a scheduled run, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, why 403/parse/empty-payload are deliberately *not* retried, and why the scheduler leans on `node-cron`'s `noOverlap` instead of a custom lock.
+- **Phase 6:** scheduler wiring, `node-cron` option research (confirmed `noOverlap`/`isBusy` behavior by running it locally before relying on it — and later found that confirmation was incomplete, see phase 7).
+- **Phase 7:** route handlers, lock module, the `isBusy()`/`execute()` race test that overturned phase 6's original plan.
+- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, start the server and watch it log a scheduled run, hit `/api/jobs` and `/api/scrape/trigger` yourself and watch `/api/scrape/status` change, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, why 403/parse/empty-payload are deliberately *not* retried, why the scheduler needed its own lock instead of trusting `node-cron`'s `isBusy()`, and why the trigger endpoint responds before the scrape finishes.

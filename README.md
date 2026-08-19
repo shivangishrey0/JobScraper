@@ -49,6 +49,13 @@ npm run scrape
 - API: http://localhost:5000/api/health
 - UI: http://localhost:5173
 
+API endpoints:
+
+- `GET /api/health` — `{ ok, mongo }`, 503 if Mongo isn't connected
+- `GET /api/jobs?page=1&limit=20` — paginated listings, newest `postedDate` first
+- `POST /api/scrape/trigger` — starts a scrape in the background (202), or 409 if one's already running
+- `GET /api/scrape/status` — `{ running, lastRun, circuit, nextScheduledRun }`
+
 Health returns `{ ok, mongo }`. If Mongo is down you get HTTP 503 — that is intentional, not a silent green check.
 
 After a scrape, Atlas → Browse Collections should show `jobs`. A successful scrape JSON includes `delayMs` and `proxyUsed` (false unless you set `PROXY_URLS`).
@@ -71,7 +78,7 @@ Starting the server (`npm run dev:server` / `npm start`) also starts an automati
 - [x] Phase 4 — Anti-detection: UA rotation, jitter, extra headers, stub proxy round-robin
 - [x] Phase 5 — Resilience: retry/backoff, empty-payload = failure, circuit breaker, every run logged
 - [x] Phase 6 — Scheduler: `node-cron`, shared `runScrape`, honest about Render spin-down
-- [ ] Phase 7 — Express API: `GET /api/jobs`, `POST /api/scrape/trigger`, `GET /api/scrape/status`
+- [x] Phase 7 — Express API: `GET /api/jobs`, `POST /api/scrape/trigger`, `GET /api/scrape/status`
 - [ ] Phase 8 — Dashboard: listings table, trigger button, status panel, responsive, dark mode
 - [ ] Phase 9 — Deploy: API+Chrome on Render/Railway, frontend on Vercel/Netlify, live E2E check
 - [ ] Phase 10 — `design-doc.md` complete (all 4 required sections) + full pipeline diagram

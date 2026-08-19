@@ -28,18 +28,20 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 
 **Deploy intent (phase 9, not done yet):** API + Chrome on Render/Railway; React on Vercel. Serverless + Puppeteer is a poor fit.
 
-## Architecture (current — phase 6)
+## Architecture (current — phase 7)
 
 ```
-        npm run scrape (CLI)         node-cron "0 */6 * * *" (in Express process)
-                  \                                  /
-                   \                                /
-                    v                              v
+  npm run scrape (CLI)   node-cron "0 */6 * * *" UTC   POST /api/scrape/trigger
+          \                        |                          /
+           \          (both go through scraper/lock.js)      /
+            v                      v                         v
                           runScrape()  <-- one shared function, one behavior
                               |
 [Vite :5173] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
                               |                        ^
-                     GET /api/health                   |
+                GET  /api/health                       |
+                GET  /api/jobs        (paginated)       |
+                GET  /api/scrape/status                 |
                               |     circuit check (last N ScrapeLog rows)
                               |     jitter → stealth Chrome (+ optional proxy)
                               |     UA + headers → GET remoteok.com/api
@@ -48,8 +50,6 @@ Ingest remote job listings from a **public, documented** source, persist them, a
                               |     normalize → bulkWrite upsert on url
                               |     write ScrapeLog: success/partial/failure
 ```
-
-Trigger HTTP endpoint is phase 7.
 
 ## Scheduler (phase 6)
 
@@ -62,10 +62,13 @@ with no second copy of that logic to keep in sync.
   default `0 */6 * * *` (every 6 hours) — conservative on purpose; this is a
   polite public feed, not a target to hammer with a tight interval.
 - **No overlapping runs:** `node-cron` v4's built-in `noOverlap: true`
-  option skips a tick if the previous run is still in flight (and warns),
-  instead of a hand-rolled lock. When phase 7 adds `POST
-  /api/scrape/trigger`, that endpoint checks the same task's `isBusy()`
-  before allowing a manual run — no second overlap mechanism to maintain.
+  option skips a tick if the previous run is still in flight (and warns).
+  **Correction from this section's first draft:** the plan here was for
+  phase 7's manual trigger to just check the same task's `isBusy()` before
+  running — testing that directly (see "Trigger + status" under phase 7)
+  found it has a race and does not actually prevent two overlapping runs.
+  Phase 7 adds a small dedicated lock (`scraper/lock.js`) instead, shared by
+  both the cron task and the manual trigger.
 - **Fail-fast on bad config:** an invalid `SCRAPE_CRON_SCHEDULE` throws at
   startup (same rule as a missing `MONGODB_URI`) rather than silently
   running with a broken schedule.
@@ -78,6 +81,45 @@ with no second copy of that logic to keep in sync.
   process after inactivity, so "every 6 hours" means "every 6 hours while
   something keeps the server awake" — not a real always-on cron. Documented
   here and in the README rather than implied.
+
+## Express API (phase 7)
+
+**`GET /api/jobs`** — `?page=` / `?limit=` (default 20, capped at 100),
+sorted newest-first on `postedDate` (index already existed on the `Job`
+model from phase 2). Response is a straight projection of stored fields
+(`contentHash`/`__v` excluded as internal bookkeeping) — no reshaping, no
+invented fields, empty `location` comes back as `""` exactly as stored.
+
+**Trigger + status.** `POST /api/scrape/trigger` and `GET
+/api/scrape/status` are where the "two clicks, two Chromiums" requirement
+actually gets tested. First attempt was to check the cron task's
+`isBusy()` before calling its `execute()` — reusing node-cron's own state
+instead of writing another lock. Testing it directly (two `execute()`
+calls fired back to back, and `isBusy()` checked ~5ms before a second
+`execute()`) showed **both requests got through**: the busy flag does not
+flip to true synchronously when `execute()` is called, so two
+near-simultaneous callers can both pass the check before either sets it.
+
+`scraper/lock.js` fixes this with a plain module-level boolean, read and
+written in one synchronous statement (`if (running) return false; running =
+true; return true;`) — no `await` between the check and the set, so there's
+no gap for a second caller to slip through. Both the cron task (phase 6)
+and this endpoint call the same `tryAcquire()`/`release()`, so a scheduled
+run and a manual click can't overlap either.
+
+`POST /api/scrape/trigger` responds immediately (202 once the lock is
+acquired, 409 if already running) rather than holding the connection open
+for a run that can take up to ~40s — the scrape continues in the
+background and `GET /api/scrape/status` is how the dashboard (phase 8)
+watches it finish. Status reports whether a run is in flight, the last
+`ScrapeLog` row, circuit-breaker state (reuses `checkCircuit()` from phase
+5), and the next scheduled run time via the scheduler task's
+`getNextRun()`.
+
+Verified end-to-end against live Atlas + RemoteOK, not just read through:
+fired two triggers back to back (202 then 409), polled status until the
+run finished (100 items found, 1 upserted, 99 updated, ~22s), confirmed
+`lastRun` populated correctly afterward.
 
 ## Detection surface (phase 4)
 
@@ -183,3 +225,4 @@ I will use RemoteOK's public feed and keep outbound links. I will not add Linked
 - **4** — Randomized Chrome UA, jitter before goto, extra headers, stub `PROXY_URLS` round-robin.
 - **5** — Retry with full-jitter backoff (timeout/network/429/5xx only), empty payload treated as failure, `partial` status from bulkWrite errors, circuit breaker backed by `ScrapeLog` (not memory), every run logged.
 - **6** — `node-cron` scheduler shares `runScrape()` with the CLI, `noOverlap: true` instead of a hand-rolled lock, fail-fast on bad schedule config, honest about Render spin-down.
+- **7** — `GET /api/jobs` (paginated, sorted), `POST /api/scrape/trigger` + `GET /api/scrape/status`, backed by a tested-not-assumed `scraper/lock.js` after `isBusy()`/`execute()` turned out to be racy. Cron timezone pinned to UTC.
