@@ -3,6 +3,7 @@ import cors from 'cors';
 import { config } from './config.js';
 import { mongoStatus } from './db.js';
 import { jobsRouter } from './routes/jobs.js';
+import { scrapeRouter } from './routes/scrape.js';
 
 export function createApp() {
   const app = express();
@@ -25,6 +26,7 @@ export function createApp() {
   });
 
   app.use('/api/jobs', jobsRouter);
+  app.use('/api/scrape', scrapeRouter);
 
   return app;
 }
