@@ -26,4 +26,8 @@ export const config = {
   // 0 disables the breaker entirely (useful for isolating retry behavior).
   circuitBreakerThreshold: Number(process.env.CIRCUIT_BREAKER_THRESHOLD) || 3,
   circuitBreakerCooldownMs: Number(process.env.CIRCUIT_BREAKER_COOLDOWN_MS) || 5 * 60 * 1000,
+  // Standard 5-field cron syntax. Default: every 6 hours — conservative on
+  // purpose, this is a polite public feed, not a target to hammer.
+  scrapeCronSchedule: process.env.SCRAPE_CRON_SCHEDULE || '0 */6 * * *',
+  schedulerEnabled: process.env.SCRAPE_SCHEDULER_ENABLED !== 'false',
 };
