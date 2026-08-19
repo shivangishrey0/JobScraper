@@ -28,7 +28,7 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 
 **Deploy intent (phase 9, not done yet):** API + Chrome on Render/Railway; React on Vercel. Serverless + Puppeteer is a poor fit.
 
-## Architecture (current — phase 7)
+## Architecture (current — phase 8)
 
 ```
   npm run scrape (CLI)   node-cron "0 */6 * * *" UTC   POST /api/scrape/trigger
@@ -37,11 +37,11 @@ Ingest remote job listings from a **public, documented** source, persist them, a
             v                      v                         v
                           runScrape()  <-- one shared function, one behavior
                               |
-[Vite :5173] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
-                              |                        ^
-                GET  /api/health                       |
-                GET  /api/jobs        (paginated)       |
-                GET  /api/scrape/status                 |
+[React dashboard] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
+   status poll (4s)             |                        ^
+   trigger button      GET  /api/health                  |
+   jobs table + paging  GET  /api/jobs        (paginated) |
+                        GET  /api/scrape/status           |
                               |     circuit check (last N ScrapeLog rows)
                               |     jitter → stealth Chrome (+ optional proxy)
                               |     UA + headers → GET remoteok.com/api
@@ -120,6 +120,48 @@ Verified end-to-end against live Atlas + RemoteOK, not just read through:
 fired two triggers back to back (202 then 409), polled status until the
 run finished (100 items found, 1 upserted, 99 updated, ~22s), confirmed
 `lastRun` populated correctly afterward.
+
+## Dashboard (phase 8)
+
+Replaces the phase-1 health-check placeholder with the actual product:
+`client/src/App.jsx` gates on `/api/health` (same "start the server" message
+as before if it's down), then renders a status panel and a paginated jobs
+table, both backed by the phase 7 API.
+
+- **Status panel** (`components/StatusPanel.jsx`) polls `GET
+  /api/scrape/status` every 4s and shows: running or idle, the last run's
+  outcome (success/partial/failure — `circuit_open` gets its own "Skipped"
+  badge rather than being shown as a failure), item count, duration,
+  circuit-breaker state, and the next scheduled run. The trigger button
+  calls `POST /api/scrape/trigger`, sits in a local "starting" state until
+  the next poll confirms `running: true`, and is disabled the whole time a
+  run is in flight — same guarantee the phase 7 lock gives the API itself,
+  just reflected in the UI.
+- **Jobs table** (`components/JobsTable.jsx`) is a direct, paginated
+  projection of `GET /api/jobs` — real stored fields only, `location` shows
+  "Not listed" when empty rather than a blank cell, no counts or numbers
+  that don't come straight from the API response.
+- **Auto-refresh:** `App.jsx` tracks the previous `running` value; when a
+  poll sees it flip `true → false`, it refetches the current jobs page, so
+  a finished run shows up without the user manually reloading.
+- **One committed dark theme, no toggle.** The brief's "dark mode:
+  all-or-nothing" rule is satisfied by not attempting a light/dark switch
+  at all — a single, fully-styled theme instead of a partial one.
+- **One motion:** a soft `prefers-reduced-motion`-aware pulse on the running
+  indicator dot. Nothing else animates.
+- **Responsive, no horizontal scroll:** below 640px the jobs table drops
+  its `<thead>` and each row becomes a stacked card (`data-label` +
+  `::before`, same markup, CSS-only) instead of squeezing 6 columns
+  sideways.
+
+**Verified, not just written:** driven with a headless Chromium against the
+live dev server (real Atlas data, real trigger call) at both 1440px and
+390px — confirmed zero horizontal overflow at both widths, the button
+correctly read "Scrape running…" / `disabled: true` immediately after a
+click, the table's `<thead>` was `display: none` and rows `display: block`
+at 390px, and there were zero browser console errors. Screenshots of all
+three states (desktop idle, desktop running, mobile) were inspected
+directly, not just measured.
 
 ## Detection surface (phase 4)
 
@@ -226,3 +268,4 @@ I will use RemoteOK's public feed and keep outbound links. I will not add Linked
 - **5** — Retry with full-jitter backoff (timeout/network/429/5xx only), empty payload treated as failure, `partial` status from bulkWrite errors, circuit breaker backed by `ScrapeLog` (not memory), every run logged.
 - **6** — `node-cron` scheduler shares `runScrape()` with the CLI, `noOverlap: true` instead of a hand-rolled lock, fail-fast on bad schedule config, honest about Render spin-down.
 - **7** — `GET /api/jobs` (paginated, sorted), `POST /api/scrape/trigger` + `GET /api/scrape/status`, backed by a tested-not-assumed `scraper/lock.js` after `isBusy()`/`execute()` turned out to be racy. Cron timezone pinned to UTC.
+- **8** — React dashboard replaces the health-check placeholder: status panel (polls, trigger button, circuit/next-run display), paginated jobs table, auto-refresh on run completion, one dark theme, one motion, responsive with no horizontal scroll. Verified with a real headless-browser run against live data, not just read through.

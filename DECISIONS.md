@@ -100,6 +100,17 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 
 **Hostile target (interview):** why the lock is a plain variable and not `Atomics`/a mutex library — single Node process, single event loop, no actual concurrency to guard against, just an ordering guarantee within one process.
 
+## Phase 8
+
+| Decision | Why | Rejected |
+|---|---|---|
+| One committed dark theme, no light/dark toggle | The brief's "all-or-nothing" dark-mode rule is trivially satisfied by not building a toggle at all — a half-built one is explicitly called out as worse than none | Building a toggle under time pressure — real risk of it being the "half-dark" the brief specifically warns against |
+| Poll `/api/scrape/status` every 4s (plain `setInterval`) | Simplest thing that works for a single-user demo dashboard; a run takes seconds to tens of seconds, so a 4s poll feels responsive without hammering the API | WebSocket/SSE push — more "real-time," but real engineering overhead (connection lifecycle, reconnect logic) for a tool nobody but the grader and I will have open at once |
+| Table → stacked cards below 640px via CSS only (`data-label` + `::before`, same markup) | One source of truth for the data; "no horizontal scroll" is satisfied structurally, not by shrinking text until it technically fits | A second, mobile-specific card component — duplicates the row markup for no benefit over a CSS-only switch |
+| `circuit_open` gets its own "Skipped" badge, not lumped in with `failure` | It's a protective skip the pipeline chose on purpose, not the source rejecting a request — showing it as a plain failure would misrepresent what actually happened | Reusing the failure badge for every non-success status — simpler code, less honest about what the circuit breaker actually did |
+| Trigger button has a local "starting" state, not just `status.running` | Closes the gap between clicking and the next status poll (up to 4s) where the button would otherwise look clickable again | Relying on `status.running` alone — works most of the time, but leaves a real window for an accidental double-click |
+| Verified with a real headless-browser run (screenshots + DOM measurements) instead of just reading the code back | "For UI changes, use the feature in a browser before calling it done" — a page can render correctly and still 500 on every fetch; only actually running it catches that | Trusting lint + visual code review — would have missed anything that only shows up when the API and browser actually talk to each other |
+
 ## Trade-off under time pressure (will extend later)
 
 Phase 1 does **not** verify Atlas for you — you still paste a URI. I would spend a real week adding a `npm run doctor` that checks DNS, auth, and IP allowlisting.
@@ -116,6 +127,8 @@ Phase 6's schedule is a single global interval. With a real week I'd make it ada
 
 Phase 7's `/api/jobs` has no text search or filter by source/company. With a real week I'd add query params for that instead of making the dashboard fetch everything and filter client-side.
 
+Phase 8 polls on a fixed 4s timer regardless of whether anything is happening. With a real week I'd poll faster only while a run is in flight and back off to near-idle otherwise.
+
 ## Where AI was used
 
 - **Phase 1:** scaffold, lint/format, health, docs.
@@ -125,4 +138,5 @@ Phase 7's `/api/jobs` has no text search or filter by source/company. With a rea
 - **Phase 5:** error classification, retry/backoff, circuit breaker, partial-write handling.
 - **Phase 6:** scheduler wiring, `node-cron` option research (confirmed `noOverlap`/`isBusy` behavior by running it locally before relying on it — and later found that confirmation was incomplete, see phase 7).
 - **Phase 7:** route handlers, lock module, the `isBusy()`/`execute()` race test that overturned phase 6's original plan.
-- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, start the server and watch it log a scheduled run, hit `/api/jobs` and `/api/scrape/trigger` yourself and watch `/api/scrape/status` change, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, why 403/parse/empty-payload are deliberately *not* retried, why the scheduler needed its own lock instead of trusting `node-cron`'s `isBusy()`, and why the trigger endpoint responds before the scrape finishes.
+- **Phase 8:** components, CSS, the headless-browser verification script (written, run, and its output/screenshots inspected as part of this work, not skipped).
+- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, start the server and watch it log a scheduled run, hit `/api/jobs` and `/api/scrape/trigger` yourself and watch `/api/scrape/status` change, click "Run scrape now" in the actual dashboard and watch the table refresh, resize the browser to 390px yourself, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, why 403/parse/empty-payload are deliberately *not* retried, why the scheduler needed its own lock instead of trusting `node-cron`'s `isBusy()`, why the trigger endpoint responds before the scrape finishes, and why there's no light/dark toggle.

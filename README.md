@@ -47,7 +47,7 @@ npm run scrape
 ```
 
 - API: http://localhost:5000/api/health
-- UI: http://localhost:5173
+- UI: http://localhost:5173 — the dashboard: a jobs table, a "Run scrape now" button, and a status panel (last run, circuit breaker, next scheduled run). If the API isn't reachable it says so instead of showing a blank page.
 
 API endpoints:
 
@@ -79,7 +79,7 @@ Starting the server (`npm run dev:server` / `npm start`) also starts an automati
 - [x] Phase 5 — Resilience: retry/backoff, empty-payload = failure, circuit breaker, every run logged
 - [x] Phase 6 — Scheduler: `node-cron`, shared `runScrape`, honest about Render spin-down
 - [x] Phase 7 — Express API: `GET /api/jobs`, `POST /api/scrape/trigger`, `GET /api/scrape/status`
-- [ ] Phase 8 — Dashboard: listings table, trigger button, status panel, responsive, dark mode
+- [x] Phase 8 — Dashboard: listings table, trigger button, status panel, responsive, dark mode
 - [ ] Phase 9 — Deploy: API+Chrome on Render/Railway, frontend on Vercel/Netlify, live E2E check
 - [ ] Phase 10 — `design-doc.md` complete (all 4 required sections) + full pipeline diagram
 - [ ] Phase 11 — `DECISIONS.md` rewritten to 1 page
