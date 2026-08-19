@@ -17,4 +17,13 @@ export const config = {
   scrapeDelayMinMs: Number(process.env.SCRAPE_DELAY_MIN_MS) || 800,
   scrapeDelayMaxMs: Number(process.env.SCRAPE_DELAY_MAX_MS) || 2500,
   proxyUrls: parseProxyUrls(process.env.PROXY_URLS),
+  // Retries cover launch/goto/5xx/429 only — see errors.js for what is and
+  // is not marked retryable. 2 retries = 3 attempts total.
+  scrapeMaxRetries: Number(process.env.SCRAPE_MAX_RETRIES) || 2,
+  scrapeRetryBaseMs: Number(process.env.SCRAPE_RETRY_BASE_MS) || 1000,
+  scrapeRetryMaxMs: Number(process.env.SCRAPE_RETRY_MAX_MS) || 8000,
+  // N consecutive failed attempts trips the breaker for the cooldown window.
+  // 0 disables the breaker entirely (useful for isolating retry behavior).
+  circuitBreakerThreshold: Number(process.env.CIRCUIT_BREAKER_THRESHOLD) || 3,
+  circuitBreakerCooldownMs: Number(process.env.CIRCUIT_BREAKER_COOLDOWN_MS) || 5 * 60 * 1000,
 };

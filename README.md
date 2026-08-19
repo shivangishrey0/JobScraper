@@ -59,3 +59,19 @@ Optional: `PROXY_URLS` (comma-separated) in `server/.env` enables round-robin `-
 
 - `design-doc.md` — ingestion, detection, ToS line
 - `DECISIONS.md` — why we chose X over Y, and what AI vs you owned
+
+## Progress checklist
+
+- [x] Phase 0 — Source locked: RemoteOK public JSON, Plan B (RSS), Plan C (fetch/axios)
+- [x] Phase 1 — Repo scaffold: Express + Vite, ESLint/Prettier, Atlas connection, `/api/health`
+- [x] Phase 2 — Data model: `Job` (unique `url`, `contentHash`), `ScrapeLog`
+- [x] Phase 3 — Scraper core: Puppeteer + stealth, normalize, `bulkWrite` upsert (`npm run scrape`)
+- [x] Phase 4 — Anti-detection: UA rotation, jitter, extra headers, stub proxy round-robin
+- [x] Phase 5 — Resilience: retry/backoff, empty-payload = failure, circuit breaker, every run logged
+- [ ] Phase 6 — Scheduler: `node-cron`, shared `runScrape`, honest about Render spin-down
+- [ ] Phase 7 — Express API: `GET /api/jobs`, `POST /api/scrape/trigger`, `GET /api/scrape/status`
+- [ ] Phase 8 — Dashboard: listings table, trigger button, status panel, responsive, dark mode
+- [ ] Phase 9 — Deploy: API+Chrome on Render/Railway, frontend on Vercel/Netlify, live E2E check
+- [ ] Phase 10 — `design-doc.md` complete (all 4 required sections) + full pipeline diagram
+- [ ] Phase 11 — `DECISIONS.md` rewritten to 1 page
+- [ ] Phase 12 — Interview walkthrough notes

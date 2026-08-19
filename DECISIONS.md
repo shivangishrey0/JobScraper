@@ -62,6 +62,20 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 
 **Hostile target (interview):** residential + sticky session + `page.authenticate`, abort remaining pages on 403, Plan B RSS. We still will not add LinkedIn.
 
+## Phase 5
+
+| Decision | Why | Rejected |
+|---|---|---|
+| Circuit-breaker state read from `ScrapeLog` (Atlas), not an in-memory counter | `npm run scrape` is a fresh process every run; an in-process counter resets to 0 before it could ever trip | A module-level variable — works in phase 6's cron process, silently does nothing for the CLI today |
+| `circuit_open` skip-rows excluded from the consecutive-failure query | If skips counted, every skip would push its own timestamp forward and the cooldown would never elapse — breaker trips once, never self-closes | Counting all `failure` rows including skips — simpler query, wrong behavior |
+| Full-jitter backoff (random 0..cap, cap doubles per attempt) | A fixed 1s/2s/4s ladder is itself a timing fingerprint; jitter matches the phase-4 pre-`goto` delay reasoning | Fixed-delay retry — easier to reason about, easier to detect |
+| 403 and bad JSON are not retried; 429/5xx/timeout are | Retrying a block or a parse failure against the same request wastes attempts and repeats the exact thing that failed | Retry everything uniformly — simpler code, wastes attempts on unrecoverable errors |
+| Empty payload (0 usable jobs) is a `failure`, not retried | Could mean a decoy/changed feed, not a blip; "0 jobs" must never look like a clean run | Silent success with `itemsFound: 0` — the exact failure mode the brief calls out |
+| `bulkWrite(..., { ordered: false })` failures return a `failed` count instead of throwing | One bad row (e.g. a validation error) should not lose jobs that did save; `partial` status makes that visible | `ordered: true` — first bad row aborts the whole batch |
+| One `ScrapeLog` row per run, on every exit path (skip/success/partial/failure) | The brief specifically grades "does it keep running instead of silently failing" — an unlogged failure would fail that on its own | Log only successes, or only failures — either hides half the picture |
+
+**Hostile target (interview):** breaker threshold/cooldown tuned per target reputation, distributed circuit state (Redis) once multiple workers share one target, retry budget separate from circuit-trip counting so a slow-but-recovering source doesn't trip the breaker as fast as a hard-down one.
+
 ## Trade-off under time pressure (will extend later)
 
 Phase 1 does **not** verify Atlas for you — you still paste a URI. I would spend a real week adding a `npm run doctor` that checks DNS, auth, and IP allowlisting.
@@ -72,10 +86,13 @@ Phase 3 uses one Chrome per CLI run. With a real week I'd keep a browser pool so
 
 Phase 4 does not buy a proxy. With a real week I'd wire one authenticated residential endpoint and log which hop served the run.
 
+Phase 5 uses one threshold/cooldown for every failure type. With a real week I'd weight the circuit differently for "source is down" (5xx, short cooldown) vs "we look like a bot" (403/429 streak, longer cooldown, maybe rotate UA/proxy before the next attempt instead of just waiting).
+
 ## Where AI was used
 
 - **Phase 1:** scaffold, lint/format, health, docs.
 - **Phase 2:** schema files, hash helper, these tables.
 - **Phase 3:** Puppeteer adapter, normalize, bulkWrite, CLI.
 - **Phase 4:** UA list, jitter, headers, proxy stub.
-- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, and why `PROXY_URLS` is empty in the demo.
+- **Phase 5:** error classification, retry/backoff, circuit breaker, partial-write handling.
+- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, and why 403/parse/empty-payload are deliberately *not* retried.
