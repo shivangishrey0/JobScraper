@@ -1,9 +1,10 @@
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
 import { config } from '../config.js';
+import { nextProxy, parseProxyEndpoint } from './proxy.js';
 
 // Register once at module load. Stealth patches navigator.webdriver and a few
-// other headless tells. Phase 4 adds UA/jitter/headers on top of this.
+// other headless tells. UA / headers / jitter live in antiDetect.js on the page.
 puppeteer.use(StealthPlugin());
 
 export async function launchBrowser() {
@@ -14,8 +15,21 @@ export async function launchBrowser() {
     args.push('--no-sandbox', '--disable-setuid-sandbox');
   }
 
-  return puppeteer.launch({
+  // Empty PROXY_URLS = direct connection. Demo stays honest; no fake IPs.
+  const proxyUrl = nextProxy(config.proxyUrls);
+  let proxyAuth = null;
+  if (proxyUrl) {
+    const parsed = parseProxyEndpoint(proxyUrl);
+    args.push(`--proxy-server=${parsed.serverArg}`);
+    if (parsed.username) {
+      proxyAuth = { username: parsed.username, password: parsed.password };
+    }
+  }
+
+  const browser = await puppeteer.launch({
     headless: true,
     args,
   });
+
+  return { browser, proxyAuth, proxyUrl: proxyUrl || null };
 }

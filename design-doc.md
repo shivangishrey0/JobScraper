@@ -28,7 +28,7 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 
 **Deploy intent (phase 9, not done yet):** API + Chrome on Render/Railway; React on Vercel. Serverless + Puppeteer is a poor fit.
 
-## Architecture (current — phase 3)
+## Architecture (current — phase 4)
 
 ```
                     npm run scrape (CLI)
@@ -36,21 +36,34 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 [Vite :5173] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
                               |                        ^
                      GET /api/health                   |
-                              |              Puppeteer+stealth GET remoteok.com/api
-                              |              normalize → bulkWrite upsert on url
+                              |     jitter → stealth Chrome (+ optional proxy)
+                              |     UA + headers → GET remoteok.com/api
+                              |     normalize → bulkWrite upsert on url
 ```
 
 Trigger HTTP endpoint is phase 7. ScrapeLog writes are phase 5.
 
-## Detection surface (started phase 3)
+## Detection surface (phase 4)
 
-Stealth plugin is on. Still missing (phase 4): randomized UA, delay/jitter, extra headers, stub proxy list. Still missing (phase 5): retries, circuit breaker, ScrapeLog on every run.
+What gives an automated client away, and what we account for:
 
-Even a public JSON URL can rate-limit or fingerprint: TLS of headless Chrome, UA, volume, datacenter IP.
+| Signal | Accounted for? |
+| --- | --- |
+| `navigator.webdriver` / common headless leaks | Yes — `puppeteer-extra-plugin-stealth` |
+| Default Puppeteer user-agent | Yes — pick from a short current Chrome desktop list, one UA per run |
+| Missing `Accept-Language` / `Referer` | Yes — `setExtraHTTPHeaders`. We do **not** override `Accept-Encoding` (Chromium owns that; faking it is itself a tell) |
+| Perfectly even request timing | Yes — random sleep 800–2500ms (env) before `goto` |
+| Datacenter IP | Stub only — `PROXY_URLS` round-robin into `--proxy-server` when set. Empty list = your real IP (honest local demo) |
+| TLS / Chrome version mismatch | Partial — we use Puppeteer's bundled Chrome (`npx puppeteer browsers install chrome` if missing) |
+| Behavioral / login / cookies | Out of scope — we do not log in |
 
-## Ingestion strategy (phase 3)
+**Mid-run block:** RemoteOK is **one GET**. A 403/429 fails the whole run (no upsert of a partial HTML crawl). On a paginated HTML board the same pattern would: stop remaining pages, keep jobs already saved, log `blocked`. Retries + circuit breaker are phase 5.
 
-One GET of the full JSON batch per run (RemoteOK is not paginated like a search UI). Skip the legal/metadata row and any item missing title, company, or http(s) URL. Strip HTML in descriptions, cap at 10k chars. Upsert with `bulkWrite` keyed on `url`. `scrapedAt` updates every time we see the listing.
+**Hostile-target upgrade we are not building:** paid residential proxies, sticky sessions, `page.authenticate` against a vendor, CAPTCHA farms, cookie jars. `PROXY_URLS` exists so the *rotation hook* is real and explainable.
+
+## Ingestion strategy (phase 3–4)
+
+One GET of the full JSON batch per run (RemoteOK is not paginated like a search UI). Skip the legal/metadata row and any item missing title, company, or http(s) URL. Strip HTML in descriptions, cap at 10k chars. Upsert with `bulkWrite` keyed on `url`. `scrapedAt` updates every time we see the listing. Pacing/UA/headers wrap that single GET so the same helpers can sit between pages later.
 
 ## Where I stop (ToS)
 
@@ -67,3 +80,4 @@ I will use RemoteOK's public feed and keep outbound links. I will not add Linked
 - **0** — Locked RemoteOK JSON + MERN + Puppeteer-for-pipeline-not-because-HTML-is-required.
 - **1** — Repo split, Prettier, ESLint, Atlas connection, `/api/health`.
 - **3** — Puppeteer + stealth, RemoteOK JSON, normalize, upsert on `url` (`npm run scrape`).
+- **4** — Randomized Chrome UA, jitter before goto, extra headers, stub `PROXY_URLS` round-robin.

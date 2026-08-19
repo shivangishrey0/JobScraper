@@ -2,15 +2,33 @@ import { config } from '../config.js';
 import { launchBrowser } from './browser.js';
 import { normalizeRemoteOkPayload } from './normalize.js';
 import { upsertJobs } from './upsert.js';
+import {
+  extraHeaders,
+  jitterDelayMs,
+  pickUserAgent,
+  sleep,
+} from './antiDetect.js';
 
 /**
- * Core run: open a stealth Chromium, GET the public JSON, upsert by url.
- * Retries, jitter, proxy rotation, and ScrapeLog land in phases 4–5.
+ * Core run: stealth Chromium, paced GET of the public JSON, upsert by url.
+ * Retries, circuit breaker, and ScrapeLog land in phase 5.
  */
 export async function runScrape() {
-  const browser = await launchBrowser();
+  // Pace before we even launch. On a paginated HTML board this same sleep
+  // would sit between page 1, 2, 3 — RemoteOK is one GET, so this is one wait.
+  const delayMs = jitterDelayMs();
+  await sleep(delayMs);
+
+  const { browser, proxyAuth, proxyUrl } = await launchBrowser();
   try {
     const page = await browser.newPage();
+    if (proxyAuth) {
+      await page.authenticate(proxyAuth);
+    }
+
+    await page.setUserAgent(pickUserAgent());
+    await page.setExtraHTTPHeaders(extraHeaders());
+
     const response = await page.goto(config.sourceUrl, {
       // JSON has no long-lived connections. networkidle0 can hang if Chrome
       // keeps a socket; DOM ready is enough to read response.json().
@@ -38,6 +56,8 @@ export async function runScrape() {
       skipped,
       upserted,
       modified,
+      delayMs,
+      proxyUsed: Boolean(proxyUrl),
     };
   } finally {
     await browser.close();

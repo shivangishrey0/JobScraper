@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseProxyUrls } from './scraper/proxy.js';
 
 // Load server/.env regardless of the process cwd (root vs server/).
 const serverRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -13,4 +14,7 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   sourceUrl: process.env.SOURCE_URL || 'https://remoteok.com/api',
   puppeteerNoSandbox: process.env.PUPPETEER_NO_SANDBOX === '1',
+  scrapeDelayMinMs: Number(process.env.SCRAPE_DELAY_MIN_MS) || 800,
+  scrapeDelayMaxMs: Number(process.env.SCRAPE_DELAY_MAX_MS) || 2500,
+  proxyUrls: parseProxyUrls(process.env.PROXY_URLS),
 };

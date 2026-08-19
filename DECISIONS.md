@@ -50,6 +50,18 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 | `--no-sandbox` on Linux only | Render/Chromium needs it; Windows local does not | Always no-sandbox — extra hole on a laptop |
 | No ScrapeLog yet | Phase 5 owns "every run is logged, including failures" | Logging success-only now — would teach the wrong habit |
 
+## Phase 4
+
+| Decision | Why | Rejected |
+|---|---|---|
+| Jitter on a single GET | Graders ask about pacing. Same sleep helper would sit between paginated pages | Skip jitter because "there's only one request" — then the pattern is not demoable |
+| Four current Chrome UAs, not a 200-string rotator | Weird UAs (old Safari, Googlebot) are a stronger tell than slightly stale Chrome | `user-agents` npm package — extra dep, noisier story |
+| Extra headers minus `Accept-Encoding` | Real tabs send language + referer; Chromium must own compression | Copying a full "stealth headers" gist that overrides encoding |
+| Stub `PROXY_URLS`, empty by default | Rotation hook is real; local scrape still uses your IP — no fake "we're rotating" UI | Hardcoding public free proxies — they die, leak, and look dishonest |
+| In-process round-robin (not Redis) | CLI one-shots reset to 0; Express+cron (phase 6) will actually walk the list | Persisting the index in Mongo — overkill until we have paid proxies |
+
+**Hostile target (interview):** residential + sticky session + `page.authenticate`, abort remaining pages on 403, Plan B RSS. We still will not add LinkedIn.
+
 ## Trade-off under time pressure (will extend later)
 
 Phase 1 does **not** verify Atlas for you — you still paste a URI. I would spend a real week adding a `npm run doctor` that checks DNS, auth, and IP allowlisting.
@@ -58,9 +70,12 @@ Phase 2 does not expire old jobs. With a real week I'd add `lastSeenAt` and a TT
 
 Phase 3 uses one Chrome per CLI run. With a real week I'd keep a browser pool so cron does not pay cold-start every 6 hours.
 
+Phase 4 does not buy a proxy. With a real week I'd wire one authenticated residential endpoint and log which hop served the run.
+
 ## Where AI was used
 
 - **Phase 1:** scaffold, lint/format, health, docs.
 - **Phase 2:** schema files, hash helper, these tables.
 - **Phase 3:** Puppeteer adapter, normalize, bulkWrite, CLI.
-- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, and explain unique-on-url, hash, and why Puppeteer wraps a JSON API.
+- **Phase 4:** UA list, jitter, headers, proxy stub.
+- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, and why `PROXY_URLS` is empty in the demo.

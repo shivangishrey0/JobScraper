@@ -6,7 +6,7 @@ Not LinkedIn / Indeed / Naukri. Source is a public JSON feed they document thems
 
 ## Repo layout
 
-- `server/` — Express + Mongo + (later) Puppeteer scraper
+- `server/` — Express + Mongo + Puppeteer scraper (`npm run scrape`)
 - `client/` — React (Vite) dashboard
 
 ## Local setup
@@ -26,6 +26,13 @@ cd server && npm install
 cd ../client && npm install
 ```
 
+Puppeteer needs its own Chrome (not necessarily the browser you use every day):
+
+```bash
+cd server
+npx puppeteer browsers install chrome
+```
+
 ### 3. Run
 
 ```bash
@@ -35,7 +42,7 @@ npm run dev:server
 # terminal 2
 npm run dev:client
 
-# optional — ingest once (needs Atlas + Chrome)
+# ingest once (needs Atlas + Puppeteer Chrome)
 npm run scrape
 ```
 
@@ -44,7 +51,9 @@ npm run scrape
 
 Health returns `{ ok, mongo }`. If Mongo is down you get HTTP 503 — that is intentional, not a silent green check.
 
-After a scrape, Atlas → Browse Collections should show `jobs`.
+After a scrape, Atlas → Browse Collections should show `jobs`. A successful scrape JSON includes `delayMs` and `proxyUsed` (false unless you set `PROXY_URLS`).
+
+Optional: `PROXY_URLS` (comma-separated) in `server/.env` enables round-robin `--proxy-server`. Leave it unset for a direct connection.
 
 ## Docs
 
