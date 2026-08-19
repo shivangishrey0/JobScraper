@@ -28,10 +28,14 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 
 **Deploy intent (phase 9, not done yet):** API + Chrome on Render/Railway; React on Vercel. Serverless + Puppeteer is a poor fit.
 
-## Architecture (current — phase 5)
+## Architecture (current — phase 6)
 
 ```
-                    npm run scrape (CLI)
+        npm run scrape (CLI)         node-cron "0 */6 * * *" (in Express process)
+                  \                                  /
+                   \                                /
+                    v                              v
+                          runScrape()  <-- one shared function, one behavior
                               |
 [Vite :5173] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
                               |                        ^
@@ -46,6 +50,34 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 ```
 
 Trigger HTTP endpoint is phase 7.
+
+## Scheduler (phase 6)
+
+`server/src/scheduler.js` wires `node-cron` to call the exact same
+`runScrape()` the CLI already used — the retry, circuit breaker, and
+`ScrapeLog` write-up from phase 5 apply to scheduled runs automatically,
+with no second copy of that logic to keep in sync.
+
+- **Schedule:** standard 5-field cron string, `SCRAPE_CRON_SCHEDULE`,
+  default `0 */6 * * *` (every 6 hours) — conservative on purpose; this is a
+  polite public feed, not a target to hammer with a tight interval.
+- **No overlapping runs:** `node-cron` v4's built-in `noOverlap: true`
+  option skips a tick if the previous run is still in flight (and warns),
+  instead of a hand-rolled lock. When phase 7 adds `POST
+  /api/scrape/trigger`, that endpoint checks the same task's `isBusy()`
+  before allowing a manual run — no second overlap mechanism to maintain.
+- **Fail-fast on bad config:** an invalid `SCRAPE_CRON_SCHEDULE` throws at
+  startup (same rule as a missing `MONGODB_URI`) rather than silently
+  running with a broken schedule.
+- **Errors don't crash the scheduler:** a thrown error inside a scheduled
+  run is caught and logged — `runScrape()` already wrote its own
+  `ScrapeLog` row for that failure before throwing, so this catch exists
+  only to keep the process alive, not to add a second log path.
+- **Honest about Render's free tier:** the cron only fires while this
+  Express process is actually running. Render's free plan suspends the
+  process after inactivity, so "every 6 hours" means "every 6 hours while
+  something keeps the server awake" — not a real always-on cron. Documented
+  here and in the README rather than implied.
 
 ## Detection surface (phase 4)
 
@@ -150,3 +182,4 @@ I will use RemoteOK's public feed and keep outbound links. I will not add Linked
 - **3** — Puppeteer + stealth, RemoteOK JSON, normalize, upsert on `url` (`npm run scrape`).
 - **4** — Randomized Chrome UA, jitter before goto, extra headers, stub `PROXY_URLS` round-robin.
 - **5** — Retry with full-jitter backoff (timeout/network/429/5xx only), empty payload treated as failure, `partial` status from bulkWrite errors, circuit breaker backed by `ScrapeLog` (not memory), every run logged.
+- **6** — `node-cron` scheduler shares `runScrape()` with the CLI, `noOverlap: true` instead of a hand-rolled lock, fail-fast on bad schedule config, honest about Render spin-down.

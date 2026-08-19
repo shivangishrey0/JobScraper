@@ -55,6 +55,8 @@ After a scrape, Atlas → Browse Collections should show `jobs`. A successful sc
 
 Optional: `PROXY_URLS` (comma-separated) in `server/.env` enables round-robin `--proxy-server`. Leave it unset for a direct connection.
 
+Starting the server (`npm run dev:server` / `npm start`) also starts an automatic scrape every 6 hours by default (`SCRAPE_CRON_SCHEDULE`, `node-cron`) — set `SCRAPE_SCHEDULER_ENABLED=false` to turn that off and only scrape manually via `npm run scrape`. This runs in the same process, so it only fires while the server itself is awake — on a free Render deploy that spins down on inactivity, that means "every 6h while awake," not truly always-on.
+
 ## Docs
 
 - `design-doc.md` — ingestion, detection, ToS line
@@ -68,7 +70,7 @@ Optional: `PROXY_URLS` (comma-separated) in `server/.env` enables round-robin `-
 - [x] Phase 3 — Scraper core: Puppeteer + stealth, normalize, `bulkWrite` upsert (`npm run scrape`)
 - [x] Phase 4 — Anti-detection: UA rotation, jitter, extra headers, stub proxy round-robin
 - [x] Phase 5 — Resilience: retry/backoff, empty-payload = failure, circuit breaker, every run logged
-- [ ] Phase 6 — Scheduler: `node-cron`, shared `runScrape`, honest about Render spin-down
+- [x] Phase 6 — Scheduler: `node-cron`, shared `runScrape`, honest about Render spin-down
 - [ ] Phase 7 — Express API: `GET /api/jobs`, `POST /api/scrape/trigger`, `GET /api/scrape/status`
 - [ ] Phase 8 — Dashboard: listings table, trigger button, status panel, responsive, dark mode
 - [ ] Phase 9 — Deploy: API+Chrome on Render/Railway, frontend on Vercel/Netlify, live E2E check

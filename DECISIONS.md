@@ -76,6 +76,18 @@ JSON is the honest source (they document it). Puppeteer is still in the path so 
 
 **Hostile target (interview):** breaker threshold/cooldown tuned per target reputation, distributed circuit state (Redis) once multiple workers share one target, retry budget separate from circuit-trip counting so a slow-but-recovering source doesn't trip the breaker as fast as a hard-down one.
 
+## Phase 6
+
+| Decision | Why | Rejected |
+|---|---|---|
+| `node-cron` v4's built-in `noOverlap: true` instead of a hand-rolled lock | Fewer moving parts to defend; the library already solves exactly this, tested against a slow task before committing to it | Writing a `lock.js` module now — premature for a concern phase 7's single HTTP endpoint doesn't have yet; can lean on the same task's `isBusy()` then |
+| Cron calls the same `runScrape()` as the CLI, no separate scheduled-run code path | Phase 5's retry/circuit-breaker/logging apply automatically; a second copy could silently drift out of sync | A scheduler-specific wrapper with its own error handling — doubles the surface area to keep correct |
+| Default schedule every 6 hours, from an env var | Conservative pacing for a source we're trying not to hammer; still tunable without a code change | A short interval (e.g. 15 min) — better demo optics, worse anti-detection story |
+| Invalid `SCRAPE_CRON_SCHEDULE` throws at startup | Same fail-fast rule already used for a missing `MONGODB_URI` — a bad config should be loud, not silently inert | Falling back to a default schedule on a bad string — hides a typo instead of surfacing it |
+| Scheduler starts after `app.listen`, not before | The HTTP port is the primary deliverable; confirm it's up first | Starting the scheduler before listen — no real benefit, couples two independent failures |
+
+**Hostile target (interview):** phase 7's manual trigger will check the same task's `isBusy()` before allowing a click-triggered run, so cron and a manual trigger can't launch two Chromiums either — no second lock to write.
+
 ## Trade-off under time pressure (will extend later)
 
 Phase 1 does **not** verify Atlas for you — you still paste a URI. I would spend a real week adding a `npm run doctor` that checks DNS, auth, and IP allowlisting.
@@ -88,6 +100,8 @@ Phase 4 does not buy a proxy. With a real week I'd wire one authenticated reside
 
 Phase 5 uses one threshold/cooldown for every failure type. With a real week I'd weight the circuit differently for "source is down" (5xx, short cooldown) vs "we look like a bot" (403/429 streak, longer cooldown, maybe rotate UA/proxy before the next attempt instead of just waiting).
 
+Phase 6's schedule is a single global interval. With a real week I'd make it adaptive — back off the interval automatically after a circuit trip instead of retrying on the same 6h clock that got it blocked in the first place.
+
 ## Where AI was used
 
 - **Phase 1:** scaffold, lint/format, health, docs.
@@ -95,4 +109,5 @@ Phase 5 uses one threshold/cooldown for every failure type. With a real week I'd
 - **Phase 3:** Puppeteer adapter, normalize, bulkWrite, CLI.
 - **Phase 4:** UA list, jitter, headers, proxy stub.
 - **Phase 5:** error classification, retry/backoff, circuit breaker, partial-write handling.
-- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, and why 403/parse/empty-payload are deliberately *not* retried.
+- **Phase 6:** scheduler wiring, `node-cron` option research (confirmed `noOverlap`/`isBusy` behavior by running it locally before relying on it).
+- **You must personally:** create Atlas, run health, run `npm run scrape`, open a Job in Atlas, start the server and watch it log a scheduled run, and explain unique-on-url, hash, why Puppeteer wraps a JSON API, why `PROXY_URLS` is empty in the demo, why circuit-breaker state lives in `ScrapeLog` instead of memory, why 403/parse/empty-payload are deliberately *not* retried, and why the scheduler leans on `node-cron`'s `noOverlap` instead of a custom lock.
