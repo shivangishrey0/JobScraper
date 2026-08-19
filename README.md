@@ -64,6 +64,13 @@ Optional: `PROXY_URLS` (comma-separated) in `server/.env` enables round-robin `-
 
 Starting the server (`npm run dev:server` / `npm start`) also starts an automatic scrape every 6 hours by default (`SCRAPE_CRON_SCHEDULE`, `node-cron`) — set `SCRAPE_SCHEDULER_ENABLED=false` to turn that off and only scrape manually via `npm run scrape`. This runs in the same process, so it only fires while the server itself is awake — on a free Render deploy that spins down on inactivity, that means "every 6h while awake," not truly always-on.
 
+## Deploy
+
+- **API** (`server/`) → Render, via the committed `render.yaml` (root dir `server`, build installs Chrome, health check `/api/health`). Set `MONGODB_URI` and `CLIENT_ORIGIN` in the Render dashboard — not committed, `render.yaml` marks them `sync: false` on purpose.
+- **Frontend** (`client/`) → Vercel/Netlify, root directory `client`, build `npm run build`, output `dist`. Set `VITE_API_URL` to the Render API's URL (no trailing slash).
+- Atlas → Network Access must allow Render's outbound IP. Render's free tier has no static IP, so this means `0.0.0.0/0` for a demo deploy — same trade-off the local setup section above already flags.
+- Deploy order matters once, not every time: API first (with a placeholder `CLIENT_ORIGIN`), then frontend (pointed at the live API URL), then go back and set the API's `CLIENT_ORIGIN` to the real frontend URL and redeploy.
+
 ## Docs
 
 - `design-doc.md` — ingestion, detection, ToS line

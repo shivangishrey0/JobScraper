@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: jobscraper-api
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install && npx puppeteer browsers install chrome
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PUPPETEER_NO_SANDBOX
+        value: '1'
+      # Secrets and per-deploy values — set these in the Render dashboard,
+      # not here. sync: false means "Render will prompt for this, never
+      # read it from this committed file."
+      - key: MONGODB_URI
+        sync: false
+      - key: CLIENT_ORIGIN
+        sync: false
