@@ -1,10 +1,62 @@
-# Design doc
+# Design doc — RemoteOK job ingestion pipeline
 
 ## Goal
 
-Ingest remote job listings from a **public, documented** source, persist them, and display them. The pipeline should still behave predictably if the source slows down, returns empty payloads, or starts blocking the client.
+Ingest remote job listings from a **public, documented** source, persist them, and display them — and keep behaving predictably when the source slows down, returns something empty or malformed, or starts blocking the client. That last clause is most of the design: the brief grades whether the pipeline survives being detected and blocked mid-run, not just whether it works on a good day.
 
-## Source (locked, phase 0)
+## Engineering approach
+
+Four principles shaped every decision below, in order of how often they actually got invoked:
+
+1. **Pick an honest source, then build the hostile-target pattern around it anyway.** RemoteOK publishes its feed on purpose — no ToS to fight, no account to burn. But the assignment is about evading detection, so the anti-detection and resilience machinery (UA rotation, jitter, retry, circuit breaker) stays in the pipeline as a real, runnable pattern rather than something only described for a target we're not allowed to touch.
+2. **Design for *when* it breaks, not *if*.** Every layer past the first working scrape — retry, circuit breaker, partial-write handling, logging every run including failures — exists because "keeps running instead of silently failing" is graded directly. Failure handling isn't a footnote here; it's most of phases 5–7.
+3. **Never fabricate a clean result.** Zero jobs after a scrape is a `failure`, not "success, 0 jobs." Missing location is `"Not listed"`, never a guessed city. No counts anywhere that don't come straight from a real query.
+4. **Test the assumption instead of trusting the reasoning.** The clearest example: the plan for phase 7 was to reuse `node-cron`'s `isBusy()` to stop two scrape triggers from overlapping. It looked sound. Running it — two trigger calls fired back to back — proved it wasn't: both went through. The fix (a small dedicated lock) and the correction to this document both exist because the assumption got tested, not just re-read.
+
+## System architecture
+
+Three things can start a run — a manual CLI command, the cron schedule, or a dashboard button click — and all three converge on one function, one lock, and one logging path, so there's a single behavior to reason about instead of three that can quietly drift apart:
+
+```mermaid
+flowchart TD
+    subgraph TRIGGERS["Three ways a run can start"]
+        direction LR
+        CLI["npm run scrape<br/>(CLI)"]
+        CRON["node-cron<br/>0 */6 * * * UTC"]
+        TRIGGER["POST /api/scrape/trigger<br/>(dashboard button)"]
+    end
+
+    CRON --> LOCK{{"scraper/lock.js<br/>one run at a time"}}
+    TRIGGER --> LOCK
+    LOCK --> RUN["runScrape()"]
+    CLI -.->|"CLI is one-shot,<br/>skips the lock"| RUN
+
+    RUN --> CIRCUIT{"Circuit breaker open?<br/>(3 consecutive failures)"}
+    CIRCUIT -- "yes: skip" --> SKIPLOG["ScrapeLog:<br/>failure / circuit_open"]
+    CIRCUIT -- no --> FETCH["Stealth Chrome<br/>jitter → UA → headers<br/>GET remoteok.com/api"]
+
+    FETCH -- "retryable error<br/>(timeout/network/429/5xx)" --> BACKOFF["full-jitter backoff"]
+    BACKOFF --> FETCH
+    FETCH -- "not retryable<br/>(403/parse/empty)" --> FAILLOG["ScrapeLog: failure"]
+    FETCH -- ok --> NORMALIZE["normalize + validate<br/>(skip legal row, drop invalid)"]
+
+    NORMALIZE --> UPSERT["bulkWrite upsert on url"]
+    UPSERT --> RUNLOG["ScrapeLog:<br/>success / partial"]
+
+    SKIPLOG --> ATLAS[("MongoDB Atlas")]
+    FAILLOG --> ATLAS
+    RUNLOG --> ATLAS
+    UPSERT --> ATLAS
+
+    ATLAS --> JOBSAPI["GET /api/jobs<br/>(paginated)"]
+    ATLAS --> STATUSAPI["GET /api/scrape/status"]
+    JOBSAPI --> DASH["React dashboard"]
+    STATUSAPI --> DASH
+```
+
+The next four sections are the ones the brief asks for by name — detection surface, ingestion strategy, resilience, where I'd stop — followed by how the pieces above actually get scheduled, exposed over HTTP, and shown on screen.
+
+## Source & stack (locked, phase 0)
 
 |             |                                                                           |
 | ----------- | ------------------------------------------------------------------------- |
@@ -17,153 +69,15 @@ Ingest remote job listings from a **public, documented** source, persist them, a
 **Why this source:** they publish the feed on purpose. We are not logging into anyone's account and not fighting LinkedIn/Indeed/Naukri ToS.
 
 **Plan B:** RemoteOK RSS (`https://remoteok.com/remote-jobs.rss`) if JSON is blocked or changed.
-
 **Plan C:** swap the fetcher to `fetch`/`axios` against the same URL if a headless browser is the thing they block.
 
-## Stack (locked, phase 0)
-
-- MongoDB Atlas, Express, React (Vite), Node.js
-- Scraper engine (phase 3+): Puppeteer + puppeteer-extra + stealth
-- Scheduler (phase 6): `node-cron` in-process
+**Stack:** MongoDB Atlas, Express, React (Vite), Node.js. Scraper engine: Puppeteer + `puppeteer-extra` + stealth. Scheduler: `node-cron` in-process.
 
 **Deploy intent (phase 9, not done yet):** API + Chrome on Render/Railway; React on Vercel. Serverless + Puppeteer is a poor fit.
 
-## Architecture (current — phase 8)
+---
 
-```
-  npm run scrape (CLI)   node-cron "0 */6 * * *" UTC   POST /api/scrape/trigger
-          \                        |                          /
-           \          (both go through scraper/lock.js)      /
-            v                      v                         v
-                          runScrape()  <-- one shared function, one behavior
-                              |
-[React dashboard] --proxy /api--> [Express :5000] --> [MongoDB Atlas]
-   status poll (4s)             |                        ^
-   trigger button      GET  /api/health                  |
-   jobs table + paging  GET  /api/jobs        (paginated) |
-                        GET  /api/scrape/status           |
-                              |     circuit check (last N ScrapeLog rows)
-                              |     jitter → stealth Chrome (+ optional proxy)
-                              |     UA + headers → GET remoteok.com/api
-                              |       (retry w/ full-jitter backoff on
-                              |        timeout/network/429/5xx)
-                              |     normalize → bulkWrite upsert on url
-                              |     write ScrapeLog: success/partial/failure
-```
-
-## Scheduler (phase 6)
-
-`server/src/scheduler.js` wires `node-cron` to call the exact same
-`runScrape()` the CLI already used — the retry, circuit breaker, and
-`ScrapeLog` write-up from phase 5 apply to scheduled runs automatically,
-with no second copy of that logic to keep in sync.
-
-- **Schedule:** standard 5-field cron string, `SCRAPE_CRON_SCHEDULE`,
-  default `0 */6 * * *` (every 6 hours) — conservative on purpose; this is a
-  polite public feed, not a target to hammer with a tight interval.
-- **No overlapping runs:** `node-cron` v4's built-in `noOverlap: true`
-  option skips a tick if the previous run is still in flight (and warns).
-  **Correction from this section's first draft:** the plan here was for
-  phase 7's manual trigger to just check the same task's `isBusy()` before
-  running — testing that directly (see "Trigger + status" under phase 7)
-  found it has a race and does not actually prevent two overlapping runs.
-  Phase 7 adds a small dedicated lock (`scraper/lock.js`) instead, shared by
-  both the cron task and the manual trigger.
-- **Fail-fast on bad config:** an invalid `SCRAPE_CRON_SCHEDULE` throws at
-  startup (same rule as a missing `MONGODB_URI`) rather than silently
-  running with a broken schedule.
-- **Errors don't crash the scheduler:** a thrown error inside a scheduled
-  run is caught and logged — `runScrape()` already wrote its own
-  `ScrapeLog` row for that failure before throwing, so this catch exists
-  only to keep the process alive, not to add a second log path.
-- **Honest about Render's free tier:** the cron only fires while this
-  Express process is actually running. Render's free plan suspends the
-  process after inactivity, so "every 6 hours" means "every 6 hours while
-  something keeps the server awake" — not a real always-on cron. Documented
-  here and in the README rather than implied.
-
-## Express API (phase 7)
-
-**`GET /api/jobs`** — `?page=` / `?limit=` (default 20, capped at 100),
-sorted newest-first on `postedDate` (index already existed on the `Job`
-model from phase 2). Response is a straight projection of stored fields
-(`contentHash`/`__v` excluded as internal bookkeeping) — no reshaping, no
-invented fields, empty `location` comes back as `""` exactly as stored.
-
-**Trigger + status.** `POST /api/scrape/trigger` and `GET
-/api/scrape/status` are where the "two clicks, two Chromiums" requirement
-actually gets tested. First attempt was to check the cron task's
-`isBusy()` before calling its `execute()` — reusing node-cron's own state
-instead of writing another lock. Testing it directly (two `execute()`
-calls fired back to back, and `isBusy()` checked ~5ms before a second
-`execute()`) showed **both requests got through**: the busy flag does not
-flip to true synchronously when `execute()` is called, so two
-near-simultaneous callers can both pass the check before either sets it.
-
-`scraper/lock.js` fixes this with a plain module-level boolean, read and
-written in one synchronous statement (`if (running) return false; running =
-true; return true;`) — no `await` between the check and the set, so there's
-no gap for a second caller to slip through. Both the cron task (phase 6)
-and this endpoint call the same `tryAcquire()`/`release()`, so a scheduled
-run and a manual click can't overlap either.
-
-`POST /api/scrape/trigger` responds immediately (202 once the lock is
-acquired, 409 if already running) rather than holding the connection open
-for a run that can take up to ~40s — the scrape continues in the
-background and `GET /api/scrape/status` is how the dashboard (phase 8)
-watches it finish. Status reports whether a run is in flight, the last
-`ScrapeLog` row, circuit-breaker state (reuses `checkCircuit()` from phase
-5), and the next scheduled run time via the scheduler task's
-`getNextRun()`.
-
-Verified end-to-end against live Atlas + RemoteOK, not just read through:
-fired two triggers back to back (202 then 409), polled status until the
-run finished (100 items found, 1 upserted, 99 updated, ~22s), confirmed
-`lastRun` populated correctly afterward.
-
-## Dashboard (phase 8)
-
-Replaces the phase-1 health-check placeholder with the actual product:
-`client/src/App.jsx` gates on `/api/health` (same "start the server" message
-as before if it's down), then renders a status panel and a paginated jobs
-table, both backed by the phase 7 API.
-
-- **Status panel** (`components/StatusPanel.jsx`) polls `GET
-  /api/scrape/status` every 4s and shows: running or idle, the last run's
-  outcome (success/partial/failure — `circuit_open` gets its own "Skipped"
-  badge rather than being shown as a failure), item count, duration,
-  circuit-breaker state, and the next scheduled run. The trigger button
-  calls `POST /api/scrape/trigger`, sits in a local "starting" state until
-  the next poll confirms `running: true`, and is disabled the whole time a
-  run is in flight — same guarantee the phase 7 lock gives the API itself,
-  just reflected in the UI.
-- **Jobs table** (`components/JobsTable.jsx`) is a direct, paginated
-  projection of `GET /api/jobs` — real stored fields only, `location` shows
-  "Not listed" when empty rather than a blank cell, no counts or numbers
-  that don't come straight from the API response.
-- **Auto-refresh:** `App.jsx` tracks the previous `running` value; when a
-  poll sees it flip `true → false`, it refetches the current jobs page, so
-  a finished run shows up without the user manually reloading.
-- **One committed dark theme, no toggle.** The brief's "dark mode:
-  all-or-nothing" rule is satisfied by not attempting a light/dark switch
-  at all — a single, fully-styled theme instead of a partial one.
-- **One motion:** a soft `prefers-reduced-motion`-aware pulse on the running
-  indicator dot. Nothing else animates.
-- **Responsive, no horizontal scroll:** below 640px the jobs table drops
-  its `<thead>` and each row becomes a stacked card (`data-label` +
-  `::before`, same markup, CSS-only) instead of squeezing 6 columns
-  sideways.
-
-**Verified, not just written:** driven with a headless Chromium against the
-live dev server (real Atlas data, real trigger call) at both 1440px and
-390px — confirmed zero horizontal overflow at both widths, the button
-correctly read "Scrape running…" / `disabled: true` immediately after a
-click, the table's `<thead>` was `display: none` and rows `display: block`
-at 390px, and there were zero browser console errors. Screenshots of all
-three states (desktop idle, desktop running, mobile) were inspected
-directly, not just measured.
-
-## Detection surface (phase 4)
+## 1. Detection surface
 
 What gives an automated client away, and what we account for:
 
@@ -177,22 +91,25 @@ What gives an automated client away, and what we account for:
 | TLS / Chrome version mismatch | Partial — we use Puppeteer's bundled Chrome (`npx puppeteer browsers install chrome` if missing) |
 | Behavioral / login / cookies | Out of scope — we do not log in |
 
-**Mid-run block:** RemoteOK is **one GET**. A 403/429 fails the whole run (no upsert of a partial HTML crawl). On a paginated HTML board the same pattern would: stop remaining pages, keep jobs already saved, log `blocked`. Retries + circuit breaker are phase 5.
+**Mid-run block:** RemoteOK is **one GET**. A 403/429 fails the whole run (no upsert of a partial HTML crawl). On a paginated HTML board the same pattern would: stop remaining pages, keep jobs already saved, log `blocked`.
 
-**Hostile-target upgrade we are not building:** paid residential proxies, sticky sessions, `page.authenticate` against a vendor, CAPTCHA farms, cookie jars. `PROXY_URLS` exists so the *rotation hook* is real and explainable.
+**Hostile-target upgrade we are not building:** paid residential proxies, sticky sessions, `page.authenticate` against a vendor, CAPTCHA farms, cookie jars. `PROXY_URLS` exists so the *rotation hook* is real and explainable even though nothing hostile is being targeted.
 
-## Ingestion strategy (phase 3–4)
+## 2. Ingestion strategy
 
-One GET of the full JSON batch per run (RemoteOK is not paginated like a search UI). Skip the legal/metadata row and any item missing title, company, or http(s) URL. Strip HTML in descriptions, cap at 10k chars. Upsert with `bulkWrite` keyed on `url`. `scrapedAt` updates every time we see the listing. Pacing/UA/headers wrap that single GET so the same helpers can sit between pages later.
+One GET of the full JSON batch per run — RemoteOK is not paginated like a search UI, so "rotation and pacing" here means the request itself is disguised, not that we're walking multiple pages. Skip the legal/metadata row and any item missing title, company, or an `http(s)` URL — never invent a company or URL to pad the count. Strip HTML in descriptions, cap at 10k chars. Upsert with `bulkWrite` keyed on `url`; `scrapedAt` updates every time we see the listing.
 
-## Resilience (phase 5)
+**Rotation / identity:** one Chrome UA picked per run (not per request — a UA changing mid-run would itself look like two different clients), extra headers matching a real tab, and a proxy round-robin hook (`PROXY_URLS`) that's empty by default so the local demo never claims a rotation it isn't doing.
 
-The pipeline assumes every run can fail, and treats "ran but produced nothing
-believable" as a failure too — not a quiet success with zero jobs.
+**Session/identity management:** genuinely out of scope for this source — RemoteOK needs no login, so there's no session to manage. What that would look like against a session-gated target is written up as an explicit "hostile target" note in the appendix (`page.authenticate`, sticky sessions) rather than skipped silently.
 
-**Retry with backoff.** `attemptFetch` classifies every error into a
-`ScrapeError` with an `errorType` (matches the `ScrapeLog` enum) and a
-`retryable` flag:
+**Fallback when blocked mid-run:** see Resilience below — retry, then circuit breaker, then Plan B/C from the source table above. Pacing/UA/headers wrap the single GET so the same helpers would sit between pages on a paginated board.
+
+## 3. Resilience
+
+The pipeline assumes every run can fail, and treats "ran but produced nothing believable" as a failure too — not a quiet success with zero jobs.
+
+**Retry with backoff.** `attemptFetch` classifies every error into a `ScrapeError` with an `errorType` (matches the `ScrapeLog` enum) and a `retryable` flag:
 
 | Failure | errorType | Retried? |
 | --- | --- | --- |
@@ -203,72 +120,99 @@ believable" as a failure too — not a quiet success with zero jobs.
 | Response body is not valid JSON | `parse` | **No** — the source changed shape; the same GET will parse the same way again |
 | Zero usable jobs after normalize | `empty_payload` | **No** — not a transient blip, could be a decoy/changed feed |
 
-Retries use exponential backoff **with full jitter** (`retry.js`): a random
-point between 0 and `min(base × 2^attempt, cap)`, not a fixed 1s/2s/4s
-ladder. A fixed ladder is itself a timing fingerprint — same anti-detect
-reasoning as the pre-`goto` jitter in phase 4, just applied between retries.
-Default: 2 retries (3 attempts total), 1s base, 8s cap — tunable via
-`SCRAPE_MAX_RETRIES` / `SCRAPE_RETRY_BASE_MS` / `SCRAPE_RETRY_MAX_MS`. The
-same browser and page-level UA are reused across retries inside one run —
-relaunching a fresh Chromium fingerprint on every retry is more suspicious,
-not less.
+```mermaid
+flowchart TD
+    A["Attempt fetch"] -->|success| B["Return payload"]
+    A -->|error| C{"Retryable?"}
+    C -->|"no: 403 / parse / empty"| F["Throw — logged as failure"]
+    C -->|"yes: timeout / network<br/>429 / 5xx"| D{"Attempts left?"}
+    D -->|no| F
+    D -->|yes| E["Wait random(0, cap)<br/>cap doubles per attempt"]
+    E --> A
+```
 
-**Empty payload is a failure.** RemoteOK returning HTTP 200 with an empty or
-all-invalid array (after skipping the legal/metadata row) is not silently
-treated as "success, 0 jobs" — it's logged as `failure` / `empty_payload`.
-That is the difference between a pipeline that fails loudly and one that
-quietly stops working while looking green.
+Backoff is exponential **with full jitter**: a random point between 0 and `min(base × 2^attempt, cap)`, not a fixed 1s/2s/4s ladder — a fixed ladder is itself a timing fingerprint, the same reasoning as the pre-`goto` jitter above, just applied between retries. Default: 2 retries (3 attempts total), 1s base, 8s cap. The same browser and UA are reused across retries inside one run — relaunching a fresh Chromium fingerprint on every retry is more suspicious, not less.
 
-**Partial writes don't lose the run.** `upsertJobs` uses `bulkWrite` with
-`ordered: false`, so one bad row (a Mongo-level validation error, say) does
-not abort the rest of the batch. If some ops fail but others land, the run
-is logged `partial` with a count of what failed; only "every op failed" is a
-hard `failure`.
+**Empty payload is a failure.** HTTP 200 with an empty or all-invalid array (after skipping the legal row) is logged as `failure` / `empty_payload`, never "success, 0 jobs." That's the difference between failing loudly and quietly going dark while looking green.
 
-**Circuit breaker.** After `circuitBreakerThreshold` (default 3) consecutive
-**failed attempts**, new runs are skipped for `circuitBreakerCooldownMs`
-(default 5 min) instead of retried. Two things make this correct rather than
-cosmetic:
+**Partial writes don't lose the run.** `upsertJobs` uses `bulkWrite` with `ordered: false`, so one bad row doesn't abort the batch. Some ops failing while others land is logged `partial`; only "every op failed" is a hard `failure`.
 
-- State lives in `ScrapeLog` (Atlas), not a module-level counter. `npm run
-  scrape` is a fresh process every time — an in-memory counter would reset
-  to 0 before it could ever trip. Querying "last N `ScrapeLog` rows" instead
-  means the breaker survives process restarts, and the same query keeps
-  working once phase 6's cron shares one long-lived process.
-- The skip itself writes a `ScrapeLog` row (`failure` / `circuit_open`, so
-  the dashboard can show it happened), but `circuit_open` rows are
-  **excluded** from the consecutive-failure query. If they counted, every
-  skip would push its own timestamp forward and the cooldown would never
-  actually elapse — the breaker would trip once and never self-close.
+**Circuit breaker.**
 
-**Every run writes exactly one `ScrapeLog` row** — circuit-open skip,
-success, partial, or failure. No code path returns without logging.
+```mermaid
+stateDiagram-v2
+    [*] --> Closed
+    Closed --> Open: 3rd consecutive failed attempt
+    Open --> Closed: cooldown elapsed (5 min default)
+```
 
-**Mid-run block, extended:** on a paginated HTML board, a 403/429 mid-crawl
-would stop fetching remaining pages, keep whatever was already upserted,
-and log `partial` (if some pages landed) or `failure` / `blocked` (if none
-did) — the same status vocabulary this single-GET source already uses.
+While **Closed**, every success or partial run keeps it closed — only failures count toward the streak. While **Open**, new run requests aren't attempted at all; they're skipped and logged (`failure` / `circuit_open`) until the cooldown elapses.
 
-## Where I stop (ToS)
+Two things make this correct rather than cosmetic:
 
-I will use RemoteOK's public feed and keep outbound links. I will not add LinkedIn/Indeed/Naukri adapters, cookie jars, or login automation — even as a "demo."
+- **State lives in `ScrapeLog` (Atlas), not a module-level counter.** `npm run scrape` is a fresh process every time — an in-memory counter would reset to 0 before it could ever trip. Querying "last N `ScrapeLog` rows" means the breaker survives process restarts and works the same way once cron shares one long-lived process.
+- **`circuit_open` skip-rows are excluded from the consecutive-failure query.** If skips counted, every skip would push its own timestamp forward and the cooldown would never elapse — the breaker would trip once and never self-close.
 
-## Data model (phase 2)
+**Every run writes exactly one `ScrapeLog` row** — circuit-open skip, success, partial, or failure. No code path returns without logging.
 
-**Job** — identity is `url` (unique). `contentHash` is SHA-256 of title+company+location+description so a re-scrape can tell "same URL, listing changed" vs "same listing, we just saw it again." `scrapedAt` is _our_ clock; `postedDate` is _theirs_. Empty `location` stays empty — UI will say "Not listed."
+## 4. Where I'd stop (ToS)
 
-**ScrapeLog** — every run writes one row: `success` | `partial` | `failure`, plus `errorType`, `itemsFound`, `durationMs`. An empty payload is `failure` + `empty_payload`, never a quiet success. Optional `detail` is the sentence the dashboard shows.
+I will use RemoteOK's public feed and keep outbound links intact. I will not add LinkedIn/Indeed/Naukri adapters, cookie jars, or login automation — not even framed as "just a demo." The technical line and the personal line are the same line: if it needs a login I don't own or a ToS I'd be breaking, it doesn't get built, regardless of how interesting the anti-detection problem would be.
+
+---
+
+## Data model
+
+**Job** — identity is `url` (unique). `contentHash` is SHA-256 of title+company+location+description, so a re-scrape can tell "same URL, listing changed" apart from "same listing, we just saw it again." `scrapedAt` is *our* clock; `postedDate` is *theirs*. Empty `location` stays empty — the UI says "Not listed," never a guess.
+
+**ScrapeLog** — every run writes one row: `success` | `partial` | `failure`, plus `errorType`, `itemsFound`, `durationMs`. An empty payload is `failure` + `empty_payload`, never a quiet success. `detail` is the human sentence the dashboard shows.
+
+## Operating the pipeline: scheduler + API
+
+**Scheduler** (`server/src/scheduler.js`) wires `node-cron` to call the exact same `runScrape()` the CLI uses, so retry/circuit-breaker/logging apply to scheduled runs automatically — no second copy of that logic to keep in sync. Schedule is a standard cron string (`SCRAPE_CRON_SCHEDULE`, default every 6 hours — conservative on purpose, this is a polite feed, not a target to hammer), pinned to **UTC** (`SCRAPE_CRON_TIMEZONE`) after a live run showed an unset timezone silently defaults to the host's local clock. An invalid schedule throws at startup, same fail-fast rule as a missing `MONGODB_URI`. The scheduler starts after `app.listen`, so a scheduler misconfiguration doesn't stop the HTTP port itself from confirming it came up.
+
+**The overlap problem, and the correction.** The original plan was for the manual trigger endpoint to check `node-cron`'s own `isBusy()` before calling `execute()` — reuse the library's state, write no second lock. Testing it directly disproved it: firing two `execute()` calls back to back, and checking `isBusy()` a few milliseconds before a second call, both let a second run start. The busy flag isn't set synchronously when `execute()` is called, so two near-simultaneous callers can both slip through the check. `scraper/lock.js` fixes this with a plain module-level boolean, read and set in one synchronous statement with no `await` in between — nothing can preempt that. Both the cron task and the trigger route call the same `tryAcquire()`/`release()`, so a scheduled run and a manual click can't overlap either.
+
+**API surface:**
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /api/health` | `{ ok, mongo }` — 503 if Mongo isn't connected, not a fake green check |
+| `GET /api/jobs` | Paginated (`page`/`limit`, capped at 100), sorted newest-first on `postedDate`. Straight projection of stored fields — `contentHash`/`__v` excluded as internal bookkeeping, nothing reshaped or invented |
+| `POST /api/scrape/trigger` | Acquires the lock and responds immediately — 202 once started, 409 if a run is already in flight. The scrape itself continues in the background rather than holding the connection open for up to ~40s |
+| `GET /api/scrape/status` | Whether a run is in flight, the last `ScrapeLog` row, circuit-breaker state, next scheduled run time |
+
+Verified end-to-end against live Atlas + RemoteOK, not just read through: fired two triggers back to back (202 then 409), polled status until the run finished (100 items found, 1 upserted, 99 updated, ~22s), confirmed `lastRun` populated correctly afterward.
+
+## Dashboard
+
+Replaces the original health-check placeholder with the actual product. `client/src/App.jsx` gates on `/api/health` (same "start the server" message if it's down), then renders a status panel and a paginated jobs table, both backed by the API above.
+
+- **Status panel** polls `GET /api/scrape/status` every 4s: running or idle, last run's outcome (`circuit_open` gets its own "Skipped" badge, not lumped in with `failure` — it's a protective skip the pipeline chose, not the source rejecting a request), item count, duration, circuit state, next scheduled run. The trigger button sits in a local "starting" state until the next poll confirms `running: true`, closing the double-click window a bare `status.running` check would leave open.
+- **Jobs table** is a direct, paginated projection of `GET /api/jobs` — real fields only, `location` shows "Not listed" rather than a blank cell, no counts that don't come straight from the API response.
+- **Auto-refresh:** when a status poll sees `running` flip `true → false`, the current jobs page refetches — a finished run shows up without a manual reload.
+- **One committed dark theme, no toggle.** The brief's "all-or-nothing" dark-mode rule is satisfied by not attempting a light/dark switch at all, rather than risking the "half-dark" it specifically calls out as worse than none.
+- **One motion:** a `prefers-reduced-motion`-aware pulse on the running indicator. Nothing else animates.
+- **Responsive, no horizontal scroll:** below 640px the jobs table drops its `<thead>` and each row becomes a stacked card (CSS-only, same markup) instead of squeezing six columns sideways.
+
+**Verified, not just written:** driven with a headless Chromium against the live dev server (real Atlas data, real trigger call) at both 1440px and 390px — zero horizontal overflow at either width, the button correctly read "Scrape running…" / `disabled: true` immediately after a click, the table's `<thead>` was `display: none` and rows `display: block` at 390px, zero browser console errors. Screenshots of all three states were inspected directly, not just measured.
+
+---
 
 ## Phase log
 
-- **0** — Locked RemoteOK JSON + MERN + Puppeteer-for-pipeline-not-because-HTML-is-required.
-- **1** — Repo split, Prettier, ESLint, Atlas connection, `/api/health`.
-- **3** — Puppeteer + stealth, RemoteOK JSON, normalize, upsert on `url` (`npm run scrape`).
-- **4** — Randomized Chrome UA, jitter before goto, extra headers, stub `PROXY_URLS` round-robin.
-- **5** — Retry with full-jitter backoff (timeout/network/429/5xx only), empty payload treated as failure, `partial` status from bulkWrite errors, circuit breaker backed by `ScrapeLog` (not memory), every run logged.
-- **6** — `node-cron` scheduler shares `runScrape()` with the CLI, `noOverlap: true` instead of a hand-rolled lock, fail-fast on bad schedule config, honest about Render spin-down.
-- **7** — `GET /api/jobs` (paginated, sorted), `POST /api/scrape/trigger` + `GET /api/scrape/status`, backed by a tested-not-assumed `scraper/lock.js` after `isBusy()`/`execute()` turned out to be racy. Cron timezone pinned to UTC.
-- **8** — React dashboard replaces the health-check placeholder: status panel (polls, trigger button, circuit/next-run display), paginated jobs table, auto-refresh on run completion, one dark theme, one motion, responsive with no horizontal scroll. Verified with a real headless-browser run against live data, not just read through.
+| Phase | Shipped |
+| --- | --- |
+| 0 | Source locked: RemoteOK JSON + MERN + Puppeteer-for-the-pipeline-not-because-JSON-needs-it |
+| 1 | Repo split, Prettier, ESLint, Atlas connection, `/api/health` |
+| 2 | `Job` + `ScrapeLog` schemas, `contentHash` |
+| 3 | Puppeteer + stealth, RemoteOK JSON, normalize, upsert on `url` (`npm run scrape`) |
+| 4 | Randomized Chrome UA, jitter before `goto`, extra headers, stub `PROXY_URLS` round-robin |
+| 5 | Retry with full-jitter backoff, empty payload = failure, `partial` status, circuit breaker backed by `ScrapeLog`, every run logged |
+| 6 | `node-cron` scheduler sharing `runScrape()`, fail-fast on bad schedule config, UTC-pinned |
+| 7 | `GET /api/jobs`, `POST /api/scrape/trigger`, `GET /api/scrape/status`, tested-not-assumed `scraper/lock.js` |
+| 8 | React dashboard: status panel, jobs table, auto-refresh, one dark theme, one motion, responsive |
+| 9–12 | Deploy, this document's final pass, `DECISIONS.md` 1-pager, interview walkthrough — in progress |
 
 ## Appendix: phase-by-phase decision log
 
